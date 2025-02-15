@@ -1,0 +1,27 @@
+.program squarewave
+loop:
+    set pindirs,1
+.wrap_target
+    set pins,1
+    set pins,0
+.wrap
+
+
+% c-sdk {
+#include "hardware/clocks.h"
+
+static inline void init_squarewave(PIO pio, uint sm, uint offset, uint pin, float freq) {
+    pio_sm_config c = squarewave_program_get_default_config(offset);
+
+    sm_config_set_set_pins(&c, pin, 1);
+    pio_gpio_init(pio, pin);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, 1, true);  // set output direction for pin
+
+    float div = clock_get_hz(clk_sys) / freq;
+    sm_config_set_clkdiv(&c, div);
+
+    pio_sm_init(pio, sm, offset, &c);
+    pio_sm_set_enabled(pio, sm, true);
+
+}
+%}
