@@ -90,7 +90,7 @@ static void alarm_irq(void) {
     // Clear the alarm irq
     hw_clear_bits(&timer_hw->intr, 1u << ALARM_NUM);
     amplitude = sintbl[idx] >> 2;
-    pwm_set_gpio_level(s,128 + amplitude);
+    pwm_set_gpio_level(128 + amplitude);
     pwm_set_gpio_level(PIN_START+1,128 - amplitude);
 
     timer_hw->alarm[ALARM_NUM]= timer_hw->timerawl + DELAYUS;
