@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 include(/srv/pico-sdk/pico_sdk_init.cmake)
-project(am_generator C CXX ASM)
+project(test3253 C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 pico_sdk_init()
@@ -10,7 +10,6 @@ pico_sdk_init()
 add_executable(${PROJECT_NAME}
     main.cpp
     squarewave.pio
-    ssd1306.c
 )
 
 pico_generate_pio_header(${PROJECT_NAME} ${CMAKE_CURRENT_SOURCE_DIR}/squarewave.pio)

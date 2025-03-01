@@ -6,26 +6,11 @@
 #include "./squarewave.pio.h"
 
 
-extern "C"{ 
-#include "ssd1306.h"
-}
-
-#include "CCJEncoder.h"
-
 #define FR_PIN      8
 #define ALARM_NUM   0
 #define ALARM_IRQ   TIMER_IRQ_0
-#define PIN_START   0
+#define PIN_START   14
 #define DELAYUS     10
-
-#define ROTARY_A 2
-#define ROTARY_B 3
-#define BUTTON   6
-
-#define I2C_SDA_PIN 4 // SDA
-#define I2C_SCL_PIN 5 // SCL 
-
-#define SHORT_PRESS_THRESHOLD 300000
 
 /*
 
@@ -35,7 +20,6 @@ round(sin((1:256)/256*6.28)*127+128)'
 
 */
 
-void display_val(int val);
 
 static unsigned char sintbl[] = { 
   131, 134, 137, 140, 144, 147, 150, 153, 156, 159, 162, 165, 168, 171, 174, 177, 179, 
@@ -69,21 +53,14 @@ fcw = f*2^N / Fclk    # 8200*65536/100000 -> 5373.952
 
 */
 
-uint32_t rf_freq = (uint32_t) 6250000;
-uint32_t mod_freq = (uint32_t) 2000;
-
-//static volatile uint16_t fcw = 328; // 500Hz
+uint32_t rf_freq = (uint32_t) 7812500;
+//uint32_t rf_freq = (uint32_t) 6000000;
+uint32_t mod_freq = (uint32_t) 1000;
 
 static volatile uint16_t fcw = (mod_freq * 65536) /100000; // 2kHz
 
 static volatile uint16_t accumulator = 0x0;
 
-uint32_t level = 64;
-static volatile bool singalorlevel = 0x1;
-
-ssd1306_t disp;
-
-CCJISREncoder<1> encoder1;
 
 static void alarm_irq(void) {
     unsigned char amplitude;
@@ -94,15 +71,9 @@ static void alarm_irq(void) {
     // Clear the alarm irq
     hw_clear_bits(&timer_hw->intr, 1u << ALARM_NUM);
     
-    if (singalorlevel) {
-      amplitude = sintbl[idx] >> 1;
-      pwm_set_gpio_level(PIN_START,(uint16_t)128 + amplitude);
-      pwm_set_gpio_level(PIN_START+1,(uint16_t)128 - amplitude);
-    } else {
-      pwm_set_gpio_level(PIN_START,   level);
-      pwm_set_gpio_level(PIN_START+1, 0);
-    }
-    
+    amplitude = sintbl[idx] >> 1;
+    pwm_set_gpio_level(PIN_START,(uint16_t)128 + amplitude);
+    pwm_set_gpio_level(PIN_START+1,(uint16_t)128 - amplitude);    
 
     timer_hw->alarm[ALARM_NUM]= timer_hw->timerawl + DELAYUS;
 }
@@ -138,211 +109,14 @@ void init_pwm() {
   pwm_init(magnitude_pwm_slice, &config, true);
 }
 
-void display_init() {
-  i2c_init(i2c0, 400000);
-  gpio_set_function(I2C_SDA_PIN, GPIO_FUNC_I2C);
-  gpio_set_function(I2C_SCL_PIN, GPIO_FUNC_I2C);
-  gpio_pull_up(I2C_SDA_PIN);
-  gpio_pull_up(I2C_SCL_PIN);
-
-  disp.external_vcc=false;
-  ssd1306_init(&disp, 128, 32, 0x3C, i2c0);
-  sleep_ms(1);
-  ssd1306_clear(&disp);
-}
-
-void display_val(int val) {
-  char frequency_string[15];
-  ssd1306_clear(&disp);
-  sprintf(frequency_string, "%d", val);
-  ssd1306_draw_string(&disp, 0, 0, 1, frequency_string);
-  ssd1306_show(&disp);
-}
-
-char *backMenuItem = (char*) "<---";
-char *mainMenuItems[] = { (char*)"Generator type", (char*)"RF Freq", (char*)"Audio Freq", (char*)"Level"};
-
-void hanle_mainMenu_generator_type() {
-  ssd1306_clear(&disp);
-  ssd1306_draw_string(&disp, 0, 0, 1, "Only AM transmitter");
-  ssd1306_show(&disp);
-  while(gpio_get(BUTTON));
-
-  // Wait for button release
-  while(!gpio_get(BUTTON));
-}
-
-
-/**
- * @brief Adjusts a frequency value using an encoder and displays the changes on an SSD1306 display.
- * 
- * This function allows the user to change a frequency value by rotating an encoder. The current frequency
- * and position are displayed on an SSD1306 display. The user can also navigate through different positions
- * of the frequency value by pressing a button. A short press moves to the next position, while a long press
- * exits the function.
- * 
- * @param freq Pointer to the frequency value to be adjusted.
- * @param str A string to be displayed on the SSD1306 display.
- * @param maxpos The maximum position value for the frequency adjustment.
- * @param pos The current position for the frequency adjustment.
- * @param maxvalue The maximum allowable frequency value.
- * @param callback A callback function to be called with the updated frequency value.
- */
-void ui_freq_change(uint32_t *freq, char* str, int maxpos, int pos, uint32_t maxvalue, void (*callback)(uint32_t)) {
-  encoder1.setValue(0);
-  while(1) {
-    ssd1306_clear(&disp);
-    ssd1306_draw_string(&disp, 0, 0, 1, str);
-    char frequency_string[15];
-    sprintf(frequency_string, "%8ld", *freq);
-    ssd1306_draw_string(&disp, 0, 10, 1, frequency_string);
-    uint32_t delta_freq = 1;
-    int i;
-    for (i = 0; i< (pos-1); i++) {
-      delta_freq *= 10;
-    }
-    for (i = 0; i < (8-pos); i++) {
-      frequency_string[i] =  ' '; 
-    }
-    frequency_string[i] = '^';
-    frequency_string[i+1] = 0x0;
-    ssd1306_draw_string(&disp, 0, 20, 1, frequency_string);
-    ssd1306_show(&disp);
-    
-    while( gpio_get(BUTTON) && !encoder1.check()) { 
-      // while the button is not pressed and encoder does not changed do nothing
-    }
-    if (!gpio_get(BUTTON)) {
-      uint64_t press_start = time_us_64();
-
-      // Wait for button release
-      while(!gpio_get(BUTTON));
-
-      uint64_t press_duration = time_us_64() - press_start;
-      
-      if (press_duration < SHORT_PRESS_THRESHOLD) {
-        pos +=1;
-        if(pos>maxpos) {
-          pos = 1;
-        }
-      } else {
-        // long press exit
-        return;
-      }
-    }
-    *freq+=(encoder1.value()*delta_freq);
-    if( (*freq) > maxvalue) {
-      *freq = maxvalue;
-    }
-    callback(*freq);
-    encoder1.setValue(0);
-  }
-}
-
-void rf_freq_callback(uint32_t freq) {
-  uint offset = pio_add_program(pio0, &squarewave_program);
-  init_squarewave(pio0, 0, offset, FR_PIN, rf_freq << 1);}
-
-void handle_mainMenu_rf_freq() {
-  ui_freq_change(&rf_freq, (char*)"RF Frequency:", 7, 4, 30000000, rf_freq_callback);
-}
-
-
-void level_callback(uint32_t freq) {
-  level = freq;
-}
-
-void handle_mainMenu_level() {
-  singalorlevel = 0;
-  ui_freq_change(&level, (char*)"Level:", 3, 1, 255, level_callback);
-}
-
-void mod_freq_callback(uint32_t freq) {
-  fcw = (mod_freq * 65536)/100000; 
-}
-
-void handle_mainMenu_audio_freq() {
-  singalorlevel = 1;
-  ui_freq_change(&mod_freq, (char*)"Mod Frequency:", 4, 2, 5000, mod_freq_callback);
-}
-void (*mainMenuActions[])() = { hanle_mainMenu_generator_type, handle_mainMenu_rf_freq, handle_mainMenu_audio_freq, handle_mainMenu_level};
-
-void updateMenu(int idx, char *menuStr) {
-  char frequency_string[15];
-  ssd1306_clear(&disp);
-  ssd1306_draw_string(&disp, 0, 0, 1, menuStr);
-  sprintf(frequency_string, "%d", idx);
-  ssd1306_draw_string(&disp, 8, 24, 1, frequency_string);
-  ssd1306_show(&disp);
-}
-
-/**
- * @brief Handles a menu system with rotary encoder input and button selection.
- *
- * This function manages a menu system where the user can navigate through menu items
- * using a rotary encoder and select an item using a button. The function updates the
- * display with the current menu item and executes the corresponding action when an
- * item is selected.
- *
- * @param menuItems An array of strings representing the menu items.
- * @param menuSize The number of items in the menu.
- * @param menuActions An array of function pointers corresponding to actions for each menu item.
- */
-void menu_handler(char *menuItems[], int menuSize, void (*menuActions[])()) {
-  encoder1.setValue(0);
-  bool isExit = false;
-  int idx = 0;
-  menuSize++; // back option should be always
-  updateMenu(0, menuItems[idx]);
-  while (1) {
-    if(encoder1.check()) {
-      idx+= encoder1.value();
-      encoder1.setValue(0);
-      if (idx<0) idx += menuSize;
-      idx = idx % menuSize;
-      updateMenu(idx, (idx == (menuSize-1)) ? backMenuItem : menuItems[idx]);
-    }
-    if(!gpio_get(BUTTON)) {
-      // Wait for button release
-      while(!gpio_get(BUTTON));
-
-      if (idx == (menuSize-1)) {
-        return;
-      }
-    
-      menuActions[idx]();
-      updateMenu(idx, (idx == (menuSize-1)) ? backMenuItem : menuItems[idx]);
-    }
-  }
-}
 
 int main() {
     stdio_init_all();
     init_pwm();
-    display_init();
-    ssd1306_draw_string(&disp, 8, 24, 1, "HELLO123");
-    ssd1306_show(&disp);
     alarm_in_us();
-    encoder1.init(ROTARY_A, ROTARY_B);
-    gpio_init(BUTTON);
-    gpio_set_dir(BUTTON, GPIO_IN);
-	  gpio_pull_up(BUTTON);
     uint offset = pio_add_program(pio0, &squarewave_program);
     init_squarewave(pio0, 0, offset, FR_PIN, rf_freq << 1);
     sleep_ms(2000);
     while(1) {
-      menu_handler(mainMenuItems, 4, mainMenuActions);
-      fcw = (mod_freq * 65536)/100000; 
-      init_squarewave(pio0, 0, offset, FR_PIN, rf_freq << 1);
-      char dstr[55];
-      ssd1306_clear(&disp);
-      sprintf(dstr, "RF: %8ld", rf_freq);
-      ssd1306_draw_string(&disp, 0, 0, 1, dstr);
-
-      sprintf(dstr, "Mod: %4ld", mod_freq);
-      ssd1306_draw_string(&disp, 0, 10, 1, dstr);
-
-      ssd1306_show(&disp);
-      while(gpio_get(BUTTON));
     }
 }
