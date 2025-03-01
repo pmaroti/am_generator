@@ -5,6 +5,7 @@
 #include "hardware/pwm.h"
 #include "./squarewave.pio.h"
 
+
 extern "C"{ 
 #include "ssd1306.h"
 }
@@ -69,13 +70,16 @@ fcw = f*2^N / Fclk    # 8200*65536/100000 -> 5373.952
 */
 
 uint32_t rf_freq = (uint32_t) 6250000;
-uint32_t mod_freq = (uint16_t) 2000;
+uint32_t mod_freq = (uint32_t) 2000;
 
 //static volatile uint16_t fcw = 328; // 500Hz
 
-static volatile uint16_t fcw = mod_freq * 65536/100000; // 2kHz
+static volatile uint16_t fcw = (mod_freq * 65536) /100000; // 2kHz
 
 static volatile uint16_t accumulator = 0x0;
+
+uint32_t level = 64;
+static volatile bool singalorlevel = 0x1;
 
 ssd1306_t disp;
 
@@ -89,9 +93,16 @@ static void alarm_irq(void) {
     
     // Clear the alarm irq
     hw_clear_bits(&timer_hw->intr, 1u << ALARM_NUM);
-    amplitude = sintbl[idx] >> 2;
-    pwm_set_gpio_level(PIN_START,128 + amplitude);
-    pwm_set_gpio_level(PIN_START+1,128 - amplitude);
+    
+    if (singalorlevel) {
+      amplitude = sintbl[idx] >> 1;
+      pwm_set_gpio_level(PIN_START,(uint16_t)128 + amplitude);
+      pwm_set_gpio_level(PIN_START+1,(uint16_t)128 - amplitude);
+    } else {
+      pwm_set_gpio_level(PIN_START,   level);
+      pwm_set_gpio_level(PIN_START+1, 0);
+    }
+    
 
     timer_hw->alarm[ALARM_NUM]= timer_hw->timerawl + DELAYUS;
 }
@@ -149,7 +160,7 @@ void display_val(int val) {
 }
 
 char *backMenuItem = (char*) "<---";
-char *mainMenuItems[] = { (char*)"Generator type", (char*)"RF Freq", (char*)"Audio Freq"};
+char *mainMenuItems[] = { (char*)"Generator type", (char*)"RF Freq", (char*)"Audio Freq", (char*)"Level"};
 
 void hanle_mainMenu_generator_type() {
   ssd1306_clear(&disp);
@@ -162,7 +173,22 @@ void hanle_mainMenu_generator_type() {
 }
 
 
-void ui_freq_change(uint32_t *freq, char* str, int maxpos, int pos, uint32_t maxvalue) {
+/**
+ * @brief Adjusts a frequency value using an encoder and displays the changes on an SSD1306 display.
+ * 
+ * This function allows the user to change a frequency value by rotating an encoder. The current frequency
+ * and position are displayed on an SSD1306 display. The user can also navigate through different positions
+ * of the frequency value by pressing a button. A short press moves to the next position, while a long press
+ * exits the function.
+ * 
+ * @param freq Pointer to the frequency value to be adjusted.
+ * @param str A string to be displayed on the SSD1306 display.
+ * @param maxpos The maximum position value for the frequency adjustment.
+ * @param pos The current position for the frequency adjustment.
+ * @param maxvalue The maximum allowable frequency value.
+ * @param callback A callback function to be called with the updated frequency value.
+ */
+void ui_freq_change(uint32_t *freq, char* str, int maxpos, int pos, uint32_t maxvalue, void (*callback)(uint32_t)) {
   encoder1.setValue(0);
   while(1) {
     ssd1306_clear(&disp);
@@ -208,18 +234,38 @@ void ui_freq_change(uint32_t *freq, char* str, int maxpos, int pos, uint32_t max
     if( (*freq) > maxvalue) {
       *freq = maxvalue;
     }
+    callback(*freq);
     encoder1.setValue(0);
   }
 }
 
-void hanle_mainMenu_rf_freq() {
-  ui_freq_change(&rf_freq, (char*)"RF Frequency:", 7, 4, 30000000);
+void rf_freq_callback(uint32_t freq) {
+  uint offset = pio_add_program(pio0, &squarewave_program);
+  init_squarewave(pio0, 0, offset, FR_PIN, rf_freq << 1);}
+
+void handle_mainMenu_rf_freq() {
+  ui_freq_change(&rf_freq, (char*)"RF Frequency:", 7, 4, 30000000, rf_freq_callback);
 }
 
-void hanle_mainMenu_audio_freq() {
-  ui_freq_change(&mod_freq, (char*)"Mod Frequency:", 4, 2, 5000);
+
+void level_callback(uint32_t freq) {
+  level = freq;
 }
-void (*mainMenuActions[])() = { hanle_mainMenu_generator_type, hanle_mainMenu_rf_freq, hanle_mainMenu_audio_freq};
+
+void handle_mainMenu_level() {
+  singalorlevel = 0;
+  ui_freq_change(&level, (char*)"Level:", 3, 1, 255, level_callback);
+}
+
+void mod_freq_callback(uint32_t freq) {
+  fcw = (mod_freq * 65536)/100000; 
+}
+
+void handle_mainMenu_audio_freq() {
+  singalorlevel = 1;
+  ui_freq_change(&mod_freq, (char*)"Mod Frequency:", 4, 2, 5000, mod_freq_callback);
+}
+void (*mainMenuActions[])() = { hanle_mainMenu_generator_type, handle_mainMenu_rf_freq, handle_mainMenu_audio_freq, handle_mainMenu_level};
 
 void updateMenu(int idx, char *menuStr) {
   char frequency_string[15];
@@ -230,6 +276,18 @@ void updateMenu(int idx, char *menuStr) {
   ssd1306_show(&disp);
 }
 
+/**
+ * @brief Handles a menu system with rotary encoder input and button selection.
+ *
+ * This function manages a menu system where the user can navigate through menu items
+ * using a rotary encoder and select an item using a button. The function updates the
+ * display with the current menu item and executes the corresponding action when an
+ * item is selected.
+ *
+ * @param menuItems An array of strings representing the menu items.
+ * @param menuSize The number of items in the menu.
+ * @param menuActions An array of function pointers corresponding to actions for each menu item.
+ */
 void menu_handler(char *menuItems[], int menuSize, void (*menuActions[])()) {
   encoder1.setValue(0);
   bool isExit = false;
@@ -273,8 +331,8 @@ int main() {
     init_squarewave(pio0, 0, offset, FR_PIN, rf_freq << 1);
     sleep_ms(2000);
     while(1) {
-      menu_handler(mainMenuItems, 3, mainMenuActions);
-      fcw = mod_freq * 65536/100000; 
+      menu_handler(mainMenuItems, 4, mainMenuActions);
+      fcw = (mod_freq * 65536)/100000; 
       init_squarewave(pio0, 0, offset, FR_PIN, rf_freq << 1);
       char dstr[55];
       ssd1306_clear(&disp);
